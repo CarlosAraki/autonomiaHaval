@@ -1,0 +1,64 @@
+# Ambiente virtual
+venv/
+.venv/
+env/
+.env/
+
+# Bytecode e caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Ferramentas / cobertura
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Variáveis de ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editores / IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# VS Code — descomente se não versionar configuração local
+# .vscode/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log
+
+# Saídas geradas localmente (descomente se não quiser versionar figuras)
+# *.png
