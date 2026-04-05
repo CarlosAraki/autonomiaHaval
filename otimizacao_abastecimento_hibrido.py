@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
 BASE_DIR = Path(__file__).resolve().parent
@@ -336,6 +337,88 @@ def malha_superficies_3d(
     return X_3d, Y_3d, Z1_3d, Z2_3d, Z3_3d
 
 
+def pontos_intersecao_par_superficies(
+    X: np.ndarray,
+    Y: np.ndarray,
+    Za: np.ndarray,
+    Zb: np.ndarray,
+) -> np.ndarray:
+    """
+    Pontos 3D onde duas superfícies discretas se cruzam, aproximados nas arestas da malha
+    (interpolação linear onde (Za - Zb) muda de sinal).
+    Colunas de saída: x (% cidade), y (km), z (R$).
+    """
+    ny, nx = Za.shape
+    pts: list[tuple[float, float, float]] = []
+    D = Za - Zb
+
+    def aresta(d0: float, d1: float, x0: float, x1: float, y0: float, y1: float, z0: float, z1: float) -> None:
+        if np.isnan(d0) or np.isnan(d1):
+            return
+        if abs(d0) < 1e-9:
+            pts.append((float(x0), float(y0), float(z0)))
+            return
+        if d0 * d1 > 0:
+            return
+        if abs(d1 - d0) < 1e-18:
+            return
+        t = -d0 / (d1 - d0)
+        if not (0.0 <= t <= 1.0):
+            return
+        x = (1.0 - t) * x0 + t * x1
+        y = (1.0 - t) * y0 + t * y1
+        z = (1.0 - t) * z0 + t * z1
+        pts.append((x, y, z))
+
+    for i in range(ny):
+        for j in range(nx - 1):
+            aresta(
+                D[i, j],
+                D[i, j + 1],
+                X[i, j],
+                X[i, j + 1],
+                Y[i, j],
+                Y[i, j + 1],
+                Za[i, j],
+                Za[i, j + 1],
+            )
+    for i in range(ny - 1):
+        for j in range(nx):
+            aresta(
+                D[i, j],
+                D[i + 1, j],
+                X[i, j],
+                X[i + 1, j],
+                Y[i, j],
+                Y[i + 1, j],
+                Za[i, j],
+                Za[i + 1, j],
+            )
+
+    if not pts:
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.asarray(pts, dtype=np.float64)
+
+
+def pontos_cruzamento_triplo(
+    Z1: np.ndarray,
+    Z2: np.ndarray,
+    Z3: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    atol: float | None = None,
+) -> np.ndarray:
+    """Vértices onde |Z1-Z2|, |Z2-Z3| e |Z1-Z3| são simultaneamente pequenos."""
+    span = max(float(np.ptp(Z1)), float(np.ptp(Z2)), float(np.ptp(Z3)), 1.0)
+    if atol is None:
+        atol = 0.02 * span
+    m = (np.abs(Z1 - Z2) <= atol) & (np.abs(Z2 - Z3) <= atol) & (np.abs(Z1 - Z3) <= atol)
+    if not np.any(m):
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.column_stack([X[m], Y[m], ((Z1[m] + Z2[m] + Z3[m]) / 3.0)])
+
+
 def formatar_reais_br(x: float, _pos: int) -> str:
     """Formatação do eixo Y em Reais (estilo brasileiro com separador de milhar)."""
     s = f"{x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -484,6 +567,149 @@ def main() -> None:
         X_3d, Y_3d, Z3_3d, color="#3498db", label="Caso 3", **surf_kw
     )
 
+    P12 = pontos_intersecao_par_superficies(X_3d, Y_3d, Z1_3d, Z2_3d)
+    P13 = pontos_intersecao_par_superficies(X_3d, Y_3d, Z1_3d, Z3_3d)
+    P23 = pontos_intersecao_par_superficies(X_3d, Y_3d, Z2_3d, Z3_3d)
+    Pt3 = pontos_cruzamento_triplo(Z1_3d, Z2_3d, Z3_3d, X_3d, Y_3d)
+
+    cruz_handles: list[Line2D] = []
+    if P12.size:
+        ax3d.scatter(
+            P12[:, 0],
+            P12[:, 1],
+            P12[:, 2],
+            s=16,
+            c="#14532d",
+            edgecolors=_COR_MARCA_EIXO,
+            linewidths=0.5,
+            depthshade=True,
+        )
+        for p in P12:
+            ax3d.text(
+                p[0],
+                p[1],
+                p[2],
+                f"  {p[2]:,.0f}".replace(",", "."),
+                fontsize=5,
+                color=_COR_ROTULO_EIXO,
+                clip_on=True,
+            )
+        cruz_handles.append(
+            Line2D(
+                [0],
+                [0],
+                linestyle="",
+                marker="o",
+                color="w",
+                markerfacecolor="#14532d",
+                markeredgecolor=_COR_MARCA_EIXO,
+                markersize=6,
+                label="Cruz.: 1 × 2",
+            )
+        )
+    if P13.size:
+        ax3d.scatter(
+            P13[:, 0],
+            P13[:, 1],
+            P13[:, 2],
+            s=16,
+            c="#0c4a6e",
+            edgecolors=_COR_MARCA_EIXO,
+            linewidths=0.5,
+            depthshade=True,
+        )
+        for p in P13:
+            ax3d.text(
+                p[0],
+                p[1],
+                p[2],
+                f"  {p[2]:,.0f}".replace(",", "."),
+                fontsize=5,
+                color=_COR_ROTULO_EIXO,
+                clip_on=True,
+            )
+        cruz_handles.append(
+            Line2D(
+                [0],
+                [0],
+                linestyle="",
+                marker="o",
+                color="w",
+                markerfacecolor="#0c4a6e",
+                markeredgecolor=_COR_MARCA_EIXO,
+                markersize=6,
+                label="Cruz.: 1 × 3",
+            )
+        )
+    if P23.size:
+        ax3d.scatter(
+            P23[:, 0],
+            P23[:, 1],
+            P23[:, 2],
+            s=16,
+            c="#831843",
+            edgecolors=_COR_MARCA_EIXO,
+            linewidths=0.5,
+            depthshade=True,
+        )
+        for p in P23:
+            ax3d.text(
+                p[0],
+                p[1],
+                p[2],
+                f"  {p[2]:,.0f}".replace(",", "."),
+                fontsize=5,
+                color=_COR_ROTULO_EIXO,
+                clip_on=True,
+            )
+        cruz_handles.append(
+            Line2D(
+                [0],
+                [0],
+                linestyle="",
+                marker="o",
+                color="w",
+                markerfacecolor="#831843",
+                markeredgecolor=_COR_MARCA_EIXO,
+                markersize=6,
+                label="Cruz.: 2 × 3",
+            )
+        )
+    if Pt3.size:
+        ax3d.scatter(
+            Pt3[:, 0],
+            Pt3[:, 1],
+            Pt3[:, 2],
+            s=36,
+            c="#f59e0b",
+            edgecolors="#78350f",
+            linewidths=0.6,
+            depthshade=True,
+        )
+        for p in Pt3:
+            ax3d.text(
+                p[0],
+                p[1],
+                p[2],
+                f"  {p[2]:,.0f}".replace(",", "."),
+                fontsize=6,
+                color="#78350f",
+                clip_on=True,
+            )
+        cruz_handles.append(
+            Line2D(
+                [0],
+                [0],
+                linestyle="",
+                marker="o",
+                color="w",
+                markerfacecolor="#f59e0b",
+                markeredgecolor="#78350f",
+                markersize=7,
+                label="Cruz.: 1 × 2 × 3",
+            )
+        )
+
     ax3d.set_xlabel(
         "Proporção de uso na cidade (%)",
         fontsize=10,
@@ -524,7 +750,11 @@ def main() -> None:
         Patch(facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.6, label="Caso 2: Elétrico + esquecimento (MC)"),
         Patch(facecolor="#3498db", edgecolor="#2980b9", alpha=0.6, label="Caso 3: Chaveamento inteligente"),
     ]
-    leg3d = ax3d.legend(handles=leg, loc="upper left", bbox_to_anchor=(0.02, 0.98))
+    leg3d = ax3d.legend(
+        handles=leg + cruz_handles,
+        loc="upper left",
+        bbox_to_anchor=(0.02, 0.98),
+    )
     for t in leg3d.get_texts():
         t.set_color(_COR_MARCA_EIXO)
 

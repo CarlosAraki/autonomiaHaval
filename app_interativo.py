@@ -8,13 +8,18 @@ Execute: streamlit run app_interativo.py
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from otimizacao_abastecimento_hibrido import KM_MARCOS_ACUM, malha_superficies_3d
+from otimizacao_abastecimento_hibrido import (
+    KM_MARCOS_ACUM,
+    malha_superficies_3d,
+    pontos_cruzamento_triplo,
+    pontos_intersecao_par_superficies,
+)
 
 # Contraste para títulos de eixos e marcas (Plotly)
 _COR_EIXO_TITULO = "#0f172a"  # slate-900
@@ -59,6 +64,38 @@ def recortar_por_km_max(
     return X[idx], Y[idx], Z1[idx], Z2[idx], Z3[idx]
 
 
+def _data_no_periodo(
+    y_km: float,
+    d_ini: date,
+    d_fim: date,
+    km_referencia: float,
+) -> date:
+    """Alinha km acumulado ao intervalo do date picker (proporção linear)."""
+    if km_referencia <= 0:
+        return d_ini
+    frac = float(np.clip(y_km / km_referencia, 0.0, 1.0))
+    nd = max(0, (d_fim - d_ini).days)
+    return d_ini + timedelta(days=int(round(frac * nd)))
+
+
+def _rotulo_cruzamento(
+    px: float,
+    py: float,
+    pz: float,
+    *,
+    d_ini: date,
+    d_fim: date,
+    km_ref: float,
+    incluir_data: bool,
+) -> str:
+    r_br = f"{pz:,.0f}".replace(",", ".")
+    base = f"{px:.0f}% cidade<br>{py:,.0f} km<br>R$ {r_br}".replace(",", ".")
+    if incluir_data and km_ref > 0:
+        dt = _data_no_periodo(py, d_ini, d_fim, km_ref)
+        base = f"{dt:%d/%m/%Y}<br>" + base
+    return base
+
+
 def figura_superficies(
     X: np.ndarray,
     Y: np.ndarray,
@@ -68,6 +105,11 @@ def figura_superficies(
     *,
     altura_px: int,
     mostrar: dict[str, bool],
+    d_ini_cal: date,
+    d_fim_cal: date,
+    km_teto_cal: float,
+    mostrar_cruzamentos: bool = True,
+    rotulos_data_picker: bool = True,
 ) -> go.Figure:
     fig = go.Figure()
 
@@ -99,6 +141,84 @@ def figura_superficies(
                 ),
             )
         )
+
+    if mostrar_cruzamentos:
+        pares: list[tuple[str, str, np.ndarray, str, str]] = []
+        if mostrar.get("c1", True) and mostrar.get("c2", True):
+            p12 = pontos_intersecao_par_superficies(X, Y, Z1, Z2)
+            pares.append(("12", "Cruz.: Caso 1 × Caso 2", p12, "#14532d", "diamond-open"))
+        if mostrar.get("c1", True) and mostrar.get("c3", True):
+            p13 = pontos_intersecao_par_superficies(X, Y, Z1, Z3)
+            pares.append(("13", "Cruz.: Caso 1 × Caso 3", p13, "#0c4a6e", "square-open"))
+        if mostrar.get("c2", True) and mostrar.get("c3", True):
+            p23 = pontos_intersecao_par_superficies(X, Y, Z2, Z3)
+            pares.append(("23", "Cruz.: Caso 2 × Caso 3", p23, "#831843", "triangle-up-open"))
+
+        km_ref = float(km_teto_cal) if km_teto_cal > 0 else float(np.nanmax(Y)) if Y.size else 1.0
+
+        for _key, legenda, P, cor_marca, simbolo in pares:
+            if P.size == 0:
+                continue
+            textos = [
+                _rotulo_cruzamento(
+                    float(p[0]),
+                    float(p[1]),
+                    float(p[2]),
+                    d_ini=d_ini_cal,
+                    d_fim=d_fim_cal,
+                    km_ref=km_ref,
+                    incluir_data=rotulos_data_picker,
+                )
+                for p in P
+            ]
+            modo = "markers+text" if rotulos_data_picker else "markers"
+            fig.add_trace(
+                go.Scatter3d(
+                    x=P[:, 0],
+                    y=P[:, 1],
+                    z=P[:, 2],
+                    mode=modo,
+                    name=legenda,
+                    text=textos,
+                    textposition="top center",
+                    textfont=dict(size=9, color=_COR_EIXO_TITULO, family="Arial, sans-serif"),
+                    marker=dict(size=6, color=cor_marca, symbol=simbolo, line=dict(width=1, color=_COR_EIXO_TITULO)),
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="cruz",
+                )
+            )
+
+        if mostrar.get("c1") and mostrar.get("c2") and mostrar.get("c3"):
+            Pt = pontos_cruzamento_triplo(Z1, Z2, Z3, X, Y)
+            if Pt.size > 0:
+                ttxt = [
+                    _rotulo_cruzamento(
+                        float(p[0]),
+                        float(p[1]),
+                        float(p[2]),
+                        d_ini=d_ini_cal,
+                        d_fim=d_fim_cal,
+                        km_ref=km_ref,
+                        incluir_data=rotulos_data_picker,
+                    )
+                    for p in Pt
+                ]
+                modo_t = "markers+text" if rotulos_data_picker else "markers"
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=Pt[:, 0],
+                        y=Pt[:, 1],
+                        z=Pt[:, 2],
+                        mode=modo_t,
+                        name="Cruz.: os 3 planos",
+                        text=ttxt,
+                        textposition="top center",
+                        textfont=dict(size=10, color="#422006", family="Arial, sans-serif"),
+                        marker=dict(size=9, color="#f59e0b", symbol="circle", line=dict(width=1, color="#78350f")),
+                        hovertemplate="%{text}<extra></extra>",
+                        legendgroup="cruz",
+                    )
+                )
 
     _font_titulo_eixo = dict(color=_COR_EIXO_TITULO, size=13, family="Arial, sans-serif")
     _font_tick_eixo = dict(color=_COR_EIXO_TICK, size=11, family="Arial, sans-serif")
@@ -210,6 +330,19 @@ def main() -> None:
         c2 = st.checkbox("Caso 2 — Comportamental (MC)", value=True)
         c3 = st.checkbox("Caso 3 — Inteligente", value=True)
 
+        st.divider()
+        st.subheader("Cruzamentos entre planos")
+        mostrar_cruz = st.checkbox(
+            "Mostrar pontos onde as superfícies se cruzam",
+            value=True,
+            help="Marca interseções aproximadas (malha) e entradas na legenda.",
+        )
+        rotulos_dp = st.checkbox(
+            "Rótulos com data do período (datepicker) em cada cruzamento",
+            value=True,
+            help="Cada ponto mostra data estimada (km alinhado ao intervalo de datas), % cidade, km e R$.",
+        )
+
     X, Y, Z1, Z2, Z3 = carregar_malha(n_simulacoes=n_sim, seed=seed)
     Xs, Ys, Z1s, Z2s, Z3s = recortar_por_km_max(X, Y, Z1, Z2, Z3, km_teto)
 
@@ -219,7 +352,18 @@ def main() -> None:
         mostrar = {k: True for k in mostrar}
 
     fig = figura_superficies(
-        Xs, Ys, Z1s, Z2s, Z3s, altura_px=altura, mostrar=mostrar
+        Xs,
+        Ys,
+        Z1s,
+        Z2s,
+        Z3s,
+        altura_px=altura,
+        mostrar=mostrar,
+        d_ini_cal=d_ini,
+        d_fim_cal=d_fim,
+        km_teto_cal=km_teto,
+        mostrar_cruzamentos=mostrar_cruz,
+        rotulos_data_picker=rotulos_dp,
     )
 
     config = {
@@ -243,7 +387,7 @@ def main() -> None:
 - **Eixo X:** proporção de km em cidade (1% a 100%).
 - **Eixo Y:** km acumulados em marcos de 5.000 km (recortados pelo teto derivado do calendário).
 - **Eixo Z:** custo acumulado em R$ (rendimento gasolina/bateria × cidade/estrada conforme o script principal).
-- O **datepicker** não altera o modelo estatístico: apenas define até quantos km a malha é exibida, via `dias × km/dia`.
+- O **datepicker** não altera o modelo estatístico: define o teto de km na malha (`dias × km/dia`) e, nos **cruzamentos**, a **data exibida** no rótulo (interpolação linear entre data inicial e final conforme o km do ponto).
 - Caso 2: esperança sobre rotulagem cidade/estrada com probabilidade *p* (linear); uma simulação cobre todo o grid de *p*.
             """
         )
