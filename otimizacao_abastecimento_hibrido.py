@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Otimização de custos de abastecimento de um carro híbrido ao longo de 500.000 km.
+Otimização de custos de abastecimento de um carro híbrido ao longo de 500.000 km (viagens de 25 km).
 
 Rendimento (km por R$): gasolina 2 km/R$ (cidade) e 2,5 km/R$ (estrada); bateria 5 km/R$
 (cidade) e 3 km/R$ (estrada). Custo marginal R$/km = 1 / rendimento.
+
+Caso 2 — autonomia máxima (km): gasolina 600 (cidade) / 750 (estrada); elétrico 250 (cidade) / 150 (estrada).
 
 Dependências: pandas, numpy, matplotlib (opcional: seaborn para estilo).
 """
@@ -34,8 +36,8 @@ except ImportError:
 
 # --- Constantes das premissas ---
 VIDA_UTIL_KM = 500_000
-KM_VIAGEM = 20
-N_VIAGENS = int(VIDA_UTIL_KM / KM_VIAGEM)  # 25.000 viagens
+KM_VIAGEM = 25
+N_VIAGENS = int(VIDA_UTIL_KM / KM_VIAGEM)  # 20.000 viagens
 
 # Rendimento: km por real (R$) — custo marginal R$/km = 1 / (km/R$)
 KM_POR_REAL_GASOLINA_CIDADE = 2.0
@@ -48,32 +50,31 @@ CUSTO_KM_GASOLINA_ESTRADA = 1.0 / KM_POR_REAL_GASOLINA_ESTRADA  # 0,40 R$/km
 CUSTO_KM_BATERIA_CIDADE = 1.0 / KM_POR_REAL_BATERIA_CIDADE  # 0,20 R$/km
 CUSTO_KM_BATERIA_ESTRADA = 1.0 / KM_POR_REAL_BATERIA_ESTRADA  # 1/3 R$/km
 
-# Autonomia (capacidade em km) — abastecimento/recarga apenas restabelece segmentos, sem custo fixo
-AUTONOMIA_GASOLINA_KM = 800.0
-AUTONOMIA_ELETRICA_KM = 200.0
+# Autonomia máxima (km) com tanque/bateria cheios — depende do tipo de viagem (cidade vs estrada)
+AUTONOMIA_GASOLINA_ESTRADA_KM = 750.0
+AUTONOMIA_GASOLINA_CIDADE_KM = 600.0
+AUTONOMIA_BATERIA_ESTRADA_KM = 150.0
+AUTONOMIA_BATERIA_CIDADE_KM = 250.0
 
 # Caso 1: ciclo 800 km gasolina + 200 km elétrico a cada 1.000 km (custos por km conforme cidade/estrada)
+# (padrão de distância por modo; não confundir com autonomia máxima do Caso 2)
 KM_GAS_POR_CICLO = 800.0
 KM_ELETRICO_POR_CICLO = 200.0
 KM_POR_CICLO_BASELINE = KM_GAS_POR_CICLO + KM_ELETRICO_POR_CICLO  # 1000
 
 # Caso 2: probabilidades (complementares 95% / 5%)
-# Com 20 km na bateria (1 viagem elétrica restante): 95% lembra de recarregar (plug);
+# Com autonomia elétrica só para mais uma viagem (KM_VIAGEM): 95% lembra de recarregar (plug);
 # 5% esquece → esta viagem sai na gasolina.
-P_ESQUECER_RECARGAR_BATERIA_COM_20KM = 0.05
+P_ESQUECER_RECARGAR_BATERIA_ULTIMA_VIAGEM = 0.05
 # Em cada viagem na gasolina: 5% lembra de recarregar a bateria (complemento dos 95% “foco gasolina”).
 P_LEMBRAR_RECARGAR_APOS_VIAGEM_GASOLINA = 0.05
 # Tanque vazio: 95% lembra de encher o tanque (só restabelece autonomia; custo só por km rodado);
 # 5% esquece — se houver bateria, usa elétrico nesta viagem; senão, abastece obrigatoriamente.
 P_LEMBRAR_ABASTECER_TANQUE_QUANDO_VAZIO = 0.95
 
-# Unidades de 20 km (uma viagem)
-N_SEG_ELETRICO = int(AUTONOMIA_ELETRICA_KM / KM_VIAGEM)  # 10
-N_SEG_GASOLINA = int(AUTONOMIA_GASOLINA_KM / KM_VIAGEM)  # 40
-
 # Marcos de utilização acumulada (km): 5.000, 10.000, …, 500.000
 KM_MARCOS_ACUM = np.arange(5_000, VIDA_UTIL_KM + 1, 5_000, dtype=np.int64)
-# Número de viagens de 20 km correspondente a cada marco
+# Número de viagens de KM_VIAGEM correspondente a cada marco
 VIAGENS_NOS_MARCOS = (KM_MARCOS_ACUM // KM_VIAGEM).astype(np.int64)
 
 
@@ -152,36 +153,49 @@ def _acumular_custo_viagem_gasolina(
         acum_estrada[ids] += KM_VIAGEM * CUSTO_KM_GASOLINA_ESTRADA
 
 
+def _auton_bat_vec(is_cidade: np.ndarray) -> np.ndarray:
+    return np.where(
+        is_cidade,
+        AUTONOMIA_BATERIA_CIDADE_KM,
+        AUTONOMIA_BATERIA_ESTRADA_KM,
+    ).astype(np.float64)
+
+
+def _auton_gas_vec(is_cidade: np.ndarray) -> np.ndarray:
+    return np.where(
+        is_cidade,
+        AUTONOMIA_GASOLINA_CIDADE_KM,
+        AUTONOMIA_GASOLINA_ESTRADA_KM,
+    ).astype(np.float64)
+
+
 def simular_caso2_monte_carlo_vetorizado(
     n_simulacoes: int = 4096,
     seed: int = 42,
     viagens_para_snapshots: np.ndarray | None = None,
+    prop_cidade: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     """
     Caso 2 — Prioridade elétrica com esquecimento (comportamental).
 
-    Custos por km conforme rendimento (gasolina/bateria × cidade/estrada); abastecer/recarregar
-    só restabelece autonomia (sem pagamento fixo).
+    Autonomia depende do tipo de viagem (cada viagem é cidade ou estrada com prob. ``prop_cidade``):
+    gasolina: 600 km (cidade) / 750 km (estrada) com tanque cheio; bateria: 250 km / 150 km.
 
-    Modelo em passos de uma viagem (20 km):
-    - Autonomia elétrica: 10 segmentos; gasolina: 40 segmentos.
-    - Com 1 segmento elétrico restante: 95% lembra de recarregar (carga cheia) e viaja no elétrico;
-      5% esquece → esta viagem na gasolina (se possível).
-    - Em modo gasolina: consome 1 segmento; após a viagem, 5% lembra de recarregar a bateria.
-    - Tanque vazio: 95% enche o tanque (autonomia); 5% esquece — se houver bateria, viagem elétrica.
+    ``elec_e`` e ``gas_e`` são frações de “tanque energético” em [0, 1]; consumo por viagem =
+    KM_VIAGEM / autonomia_km(tipo_viagem).
 
-    Para cada trajetória, acumula-se (acum_cidade, acum_estrada): custo se todas as viagens fossem
-    na cidade vs na estrada. O custo esperado para proporção p de cidade é:
-    E[custo | p] = p * acum_cidade + (1 - p) * acum_estrada (linear em p; viagens i.i.d. cidade/estrada).
+    Os acumuladores cidade/estrada mantêm a decomposição para E[custo|p] = p*acum_c + (1-p)*acum_e
+    quando ``prop_cidade == p`` (viagens i.i.d.).
 
-    Retorna (acum_cidade, acum_estrada, snap_cidade, snap_estrada) com snapshots opcionais (n_sims × n_marcos).
+    Retorna (acum_cidade, acum_estrada, snap_cidade, snap_estrada).
     """
     rng = np.random.default_rng(seed)
+    U = rng.random((n_simulacoes, N_VIAGENS))
 
     acum_cidade = np.zeros(n_simulacoes, dtype=np.float64)
     acum_estrada = np.zeros(n_simulacoes, dtype=np.float64)
-    elec = np.full(n_simulacoes, N_SEG_ELETRICO, dtype=np.int32)
-    gas = np.full(n_simulacoes, N_SEG_GASOLINA, dtype=np.int32)
+    elec_e = np.ones(n_simulacoes, dtype=np.float64)
+    gas_e = np.ones(n_simulacoes, dtype=np.float64)
     modo_gas = np.zeros(n_simulacoes, dtype=np.bool_)
 
     snap_cidade: np.ndarray | None = None
@@ -194,43 +208,50 @@ def simular_caso2_monte_carlo_vetorizado(
         snap_estrada = np.zeros((n_simulacoes, n_ck), dtype=np.float64)
 
     for trip_num in range(1, N_VIAGENS + 1):
-        # --- Ramo elétrico (fora do “período gasolina” pós-esquecimento) ---
+        tix = trip_num - 1
+        is_c = U[:, tix] < float(prop_cidade)
+
+        # --- Ramo elétrico ---
         idx_e = np.where(~modo_gas)[0]
         if idx_e.size:
             ja_viajou_eletrico = np.zeros(n_simulacoes, dtype=np.bool_)
-            id_e0 = idx_e[elec[idx_e] == 0]
+            id_e0 = idx_e[elec_e[idx_e] <= 1e-14]
             if id_e0.size:
-                elec[id_e0] = N_SEG_ELETRICO - 1
+                aut_b = _auton_bat_vec(is_c[id_e0])
+                elec_e[id_e0] = np.maximum(0.0, 1.0 - KM_VIAGEM / aut_b)
                 _acumular_custo_viagem_eletrica(id_e0, acum_cidade, acum_estrada)
                 ja_viajou_eletrico[id_e0] = True
 
             idx_e2 = idx_e[~ja_viajou_eletrico[idx_e]]
             if idx_e2.size:
-                e_sub = elec[idx_e2]
-                maior_que_1 = e_sub > 1
-                igual_1 = e_sub == 1
+                aut_b = _auton_bat_vec(is_c[idx_e2])
+                km_left = elec_e[idx_e2] * aut_b
+                maior_que_1 = km_left > KM_VIAGEM + 1e-9
+                igual_fim = (~maior_que_1) & (elec_e[idx_e2] > 1e-15)
             else:
                 maior_que_1 = np.array([], dtype=np.bool_)
-                igual_1 = np.array([], dtype=np.bool_)
+                igual_fim = np.array([], dtype=np.bool_)
 
             id_gt1 = idx_e2[maior_que_1]
             if id_gt1.size:
-                elec[id_gt1] -= 1
+                aut_bg = _auton_bat_vec(is_c[id_gt1])
+                elec_e[id_gt1] = np.maximum(
+                    0.0, elec_e[id_gt1] - KM_VIAGEM / aut_bg
+                )
                 _acumular_custo_viagem_eletrica(id_gt1, acum_cidade, acum_estrada)
 
-            id_eq1 = idx_e2[igual_1]
+            id_eq1 = idx_e2[igual_fim]
             if id_eq1.size:
                 r = rng.random(id_eq1.size)
-                esqueceu_recarga = r < P_ESQUECER_RECARGAR_BATERIA_COM_20KM
+                esqueceu_recarga = r < P_ESQUECER_RECARGAR_BATERIA_ULTIMA_VIAGEM
                 lembrou_recarga = ~esqueceu_recarga
 
-                # Esqueceu de plugar com 20 km na bateria: esta viagem seria na gasolina.
                 id_f = id_eq1[esqueceu_recarga]
                 if id_f.size:
-                    tem_gas = gas[id_f] > 0
+                    aut_g = _auton_gas_vec(is_c[id_f])
+                    tem_gas = gas_e[id_f] * aut_g >= KM_VIAGEM - 1e-9
                     id_com_gas = id_f[tem_gas]
                     id_sem_gas = id_f[~tem_gas]
-                    # Consumo de 1 segmento de gasolina ocorre no ramo gasolina (evita dupla contagem).
                     if id_com_gas.size:
                         modo_gas[id_com_gas] = True
                     if id_sem_gas.size:
@@ -239,55 +260,64 @@ def simular_caso2_monte_carlo_vetorizado(
                         id_ab = id_sem_gas[lembra_tanque]
                         id_esq_tanque = id_sem_gas[~lembra_tanque]
                         if id_ab.size:
-                            gas[id_ab] = N_SEG_GASOLINA
+                            gas_e[id_ab] = 1.0
                             modo_gas[id_ab] = True
                         if id_esq_tanque.size:
-                            pode_ev = elec[id_esq_tanque] > 0
+                            aut_be = _auton_bat_vec(is_c[id_esq_tanque])
+                            pode_ev = elec_e[id_esq_tanque] * aut_be >= KM_VIAGEM - 1e-9
                             id_ev = id_esq_tanque[pode_ev]
                             id_obrig = id_esq_tanque[~pode_ev]
                             if id_ev.size:
-                                elec[id_ev] -= 1
+                                aut_bev = _auton_bat_vec(is_c[id_ev])
+                                elec_e[id_ev] = np.maximum(0.0, elec_e[id_ev] - KM_VIAGEM / aut_bev)
                                 _acumular_custo_viagem_eletrica(id_ev, acum_cidade, acum_estrada)
                             if id_obrig.size:
-                                gas[id_obrig] = N_SEG_GASOLINA
+                                gas_e[id_obrig] = 1.0
                                 modo_gas[id_obrig] = True
 
                 id_l = id_eq1[lembrou_recarga]
                 if id_l.size:
-                    elec[id_l] = N_SEG_ELETRICO - 1
+                    aut_bl = _auton_bat_vec(is_c[id_l])
+                    elec_e[id_l] = np.maximum(0.0, 1.0 - KM_VIAGEM / aut_bl)
                     _acumular_custo_viagem_eletrica(id_l, acum_cidade, acum_estrada)
 
         idx_g = np.where(modo_gas)[0]
         if idx_g.size:
-            sem_gas = gas[idx_g] <= 0
-            ids_sem = idx_g[sem_gas]
+            aut_gg = _auton_gas_vec(is_c[idx_g])
+            precisa = gas_e[idx_g] * aut_gg < KM_VIAGEM - 1e-9
+            ids_sem = idx_g[precisa]
             if ids_sem.size:
                 r_ref = rng.random(ids_sem.size)
                 lembra_abastecer = r_ref < P_LEMBRAR_ABASTECER_TANQUE_QUANDO_VAZIO
                 id_ab = ids_sem[lembra_abastecer]
                 id_esq_t = ids_sem[~lembra_abastecer]
                 if id_ab.size:
-                    gas[id_ab] = N_SEG_GASOLINA
+                    gas_e[id_ab] = 1.0
                 if id_esq_t.size:
-                    tem_ev = elec[id_esq_t] > 0
-                    id_ev = id_esq_t[tem_ev]
-                    id_obrig = id_esq_t[~tem_ev]
+                    aut_be = _auton_bat_vec(is_c[id_esq_t])
+                    pode_ev = elec_e[id_esq_t] * aut_be >= KM_VIAGEM - 1e-9
+                    id_ev = id_esq_t[pode_ev]
+                    id_obrig = id_esq_t[~pode_ev]
                     if id_ev.size:
-                        elec[id_ev] -= 1
+                        aut_bev = _auton_bat_vec(is_c[id_ev])
+                        elec_e[id_ev] = np.maximum(0.0, elec_e[id_ev] - KM_VIAGEM / aut_bev)
                         modo_gas[id_ev] = False
                         _acumular_custo_viagem_eletrica(id_ev, acum_cidade, acum_estrada)
                     if id_obrig.size:
-                        gas[id_obrig] = N_SEG_GASOLINA
+                        gas_e[id_obrig] = 1.0
 
             idx_g_cons = np.where(modo_gas)[0]
             if idx_g_cons.size:
-                gas[idx_g_cons] -= 1
+                aut_gc = _auton_gas_vec(is_c[idx_g_cons])
+                gas_e[idx_g_cons] = np.maximum(
+                    0.0, gas_e[idx_g_cons] - KM_VIAGEM / aut_gc
+                )
                 _acumular_custo_viagem_gasolina(idx_g_cons, acum_cidade, acum_estrada)
                 r2 = rng.random(idx_g_cons.size)
                 lembrou = r2 < P_LEMBRAR_RECARGAR_APOS_VIAGEM_GASOLINA
                 id_lembrou = idx_g_cons[lembrou]
                 if id_lembrou.size:
-                    elec[id_lembrou] = N_SEG_ELETRICO
+                    elec_e[id_lembrou] = 1.0
                     modo_gas[id_lembrou] = False
 
         if (
@@ -303,35 +333,62 @@ def simular_caso2_monte_carlo_vetorizado(
     return acum_cidade, acum_estrada, snap_cidade, snap_estrada
 
 
+def caso2_curva_e_superficie_z2(
+    props: np.ndarray,
+    n_simulacoes: int,
+    seed: int,
+    com_snapshots: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Para cada proporção ``props[j]``, roda o Caso 2 com ``prop_cidade=props[j]`` (autonomia
+    condicionada ao tipo de viagem). Retorna ``y2`` (custo esperado em 500k km) e ``Z2``
+    (malha km × prop) se ``com_snapshots``.
+    """
+    props = np.asarray(props, dtype=np.float64)
+    n_p = int(props.size)
+    y2 = np.zeros(n_p, dtype=np.float64)
+    n_marco = int(VIAGENS_NOS_MARCOS.size)
+    Z2 = np.zeros((n_marco, n_p), dtype=np.float64)
+    snaps = VIAGENS_NOS_MARCOS if com_snapshots else None
+    for j in range(n_p):
+        p = float(props[j])
+        ac, ae, sc, se = simular_caso2_monte_carlo_vetorizado(
+            n_simulacoes=n_simulacoes,
+            seed=int(seed) + 17 * j,
+            viagens_para_snapshots=snaps,
+            prop_cidade=p,
+        )
+        y2[j] = float(np.mean(p * ac + (1.0 - p) * ae))
+        if com_snapshots and sc is not None and se is not None:
+            Z2[:, j] = np.mean(p * sc + (1.0 - p) * se, axis=0)
+    return y2, Z2
+
+
 def malha_superficies_3d(
     n_simulacoes: int = 4096,
     seed: int = 42,
+    props: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Monta as malhas 2D para três superfícies 3D: % cidade × km acumulado × custo (R$).
 
-    Retorna (X_pct, Y_km, Z1, Z2, Z3), com shapes compatíveis com ``plot_surface`` / Plotly.
+    ``props`` opcional (ex.: passo mais grosseiro no app interativo). Caso 2: uma simulação
+    por coluna de ``props`` com ``prop_cidade`` igual àquela proporção.
+
+    Retorna (X_pct, Y_km, Z1, Z2, Z3).
     """
-    props = np.arange(0.01, 1.01, 0.01)
-    props = np.round(props, 2)
+    if props is None:
+        props = np.round(np.arange(0.01, 1.01, 0.01), 2)
+    else:
+        props = np.asarray(props, dtype=np.float64)
     eixo_x_pct = props * 100.0
     X_3d, Y_3d = np.meshgrid(eixo_x_pct, KM_MARCOS_ACUM.astype(np.float64))
     km_col = KM_MARCOS_ACUM[:, np.newaxis].astype(np.float64)
     prop_row = props[np.newaxis, :].astype(np.float64)
     Z1_3d = custo_caso1_acumulado_ate_km(km_col, prop_row)
 
-    _ac_c, _ac_e, snap_c, snap_e = simular_caso2_monte_carlo_vetorizado(
-        n_simulacoes=n_simulacoes,
-        seed=seed,
-        viagens_para_snapshots=VIAGENS_NOS_MARCOS,
-    )
-    if snap_c is None or snap_e is None:
-        raise RuntimeError("Snapshots do Caso 2 não foram calculados.")
-
-    Z2_3d = np.mean(
-        snap_c[:, :, np.newaxis] * props.reshape(1, 1, -1)
-        + snap_e[:, :, np.newaxis] * (1.0 - props).reshape(1, 1, -1),
-        axis=0,
+    _y2_tmp, Z2_3d = caso2_curva_e_superficie_z2(
+        props, n_simulacoes=n_simulacoes, seed=seed, com_snapshots=True
     )
     Z3_3d = custo_caso3_acumulado_ate_km(km_col, prop_row)
     return X_3d, Y_3d, Z1_3d, Z2_3d, Z3_3d
@@ -437,24 +494,25 @@ def main() -> None:
     # Caso 3: elétrico na cidade, gasolina na estrada
     y3 = custo_caso3_por_proporcao_cidade(props)
 
-    # Caso 2: Monte Carlo — custo esperado em p: p*acum_cidade + (1-p)*acum_estrada
-    print("Executando simulação Monte Carlo do Caso 2 (vetorizada, com marcos de km)...")
-    acum_c2_cidade, acum_c2_estrada, snap_c2_cidade, snap_c2_estrada = (
-        simular_caso2_monte_carlo_vetorizado(
-            n_simulacoes=4096,
-            seed=42,
-            viagens_para_snapshots=VIAGENS_NOS_MARCOS,
-        )
+    # Caso 2: uma simulação por proporção p (autonomia gas/elétrico × cidade/estrada)
+    print(
+        "Monte Carlo Caso 2: 100 proporções × marcos de km (autonomia 600/750 gas, 250/150 elétrico)…"
     )
-    if snap_c2_cidade is None or snap_c2_estrada is None:
-        raise RuntimeError("Snapshots do Caso 2 não foram calculados.")
+    y2, Z2_3d = caso2_curva_e_superficie_z2(
+        props,
+        n_simulacoes=4096,
+        seed=42,
+        com_snapshots=True,
+    )
 
-    props_col = props[:, np.newaxis]
-    y2 = np.mean(props_col * acum_c2_cidade + (1.0 - props_col) * acum_c2_estrada, axis=1)
-
-    # Desvio padrão amostral ao fixar 50% cidade (referência para o resumo)
-    custo_ref_p50 = 0.5 * acum_c2_cidade + 0.5 * acum_c2_estrada
-    dp_c2 = float(np.std(custo_ref_p50, ddof=1)) if acum_c2_cidade.size > 1 else 0.0
+    ac0, ae0, _, _ = simular_caso2_monte_carlo_vetorizado(
+        n_simulacoes=4096,
+        seed=42,
+        viagens_para_snapshots=None,
+        prop_cidade=0.5,
+    )
+    custo_ref_p50 = 0.5 * ac0 + 0.5 * ae0
+    dp_c2 = float(np.std(custo_ref_p50, ddof=1)) if ac0.size > 1 else 0.0
 
     df = pd.DataFrame(
         {
@@ -518,7 +576,7 @@ def main() -> None:
         fontweight="semibold",
     )
     ax.set_title(
-        "Comparação de custos de abastecimento — híbrido (500.000 km, viagens de 20 km)",
+        "Comparação de custos de abastecimento — híbrido (500.000 km, viagens de 25 km)",
         fontsize=13,
         pad=12,
         color=_COR_ROTULO_EIXO,
@@ -544,13 +602,6 @@ def main() -> None:
     km_col = KM_MARCOS_ACUM[:, np.newaxis].astype(np.float64)
     prop_row = props[np.newaxis, :].astype(np.float64)
     Z1_3d = custo_caso1_acumulado_ate_km(km_col, prop_row)
-
-    Z2_3d = np.mean(
-        snap_c2_cidade[:, :, np.newaxis] * props.reshape(1, 1, -1)
-        + snap_c2_estrada[:, :, np.newaxis] * (1.0 - props).reshape(1, 1, -1),
-        axis=0,
-    )
-
     Z3_3d = custo_caso3_acumulado_ate_km(km_col, prop_row)
 
     fig3d = plt.figure(figsize=(12, 8))

@@ -21,6 +21,9 @@ from otimizacao_abastecimento_hibrido import (
     pontos_intersecao_par_superficies,
 )
 
+# Malha 3D mais esparsa no app (20 colunas) para não rodar 100× Monte Carlo a cada refresh
+_PROPS_MALHA_APP = np.round(np.arange(0.05, 1.01, 0.05), 2)
+
 # Contraste para títulos de eixos e marcas (Plotly)
 _COR_EIXO_TITULO = "#0f172a"  # slate-900
 _COR_EIXO_TICK = "#1e293b"  # slate-800
@@ -42,9 +45,13 @@ st.markdown(
 )
 
 
-@st.cache_data(show_spinner="Calculando malha 3D e Monte Carlo (Caso 2)…")
+@st.cache_data(show_spinner="Calculando malha 3D e Monte Carlo (Caso 2, várias proporções)…")
 def carregar_malha(n_simulacoes: int, seed: int) -> tuple:
-    return malha_superficies_3d(n_simulacoes=n_simulacoes, seed=seed)
+    return malha_superficies_3d(
+        n_simulacoes=n_simulacoes,
+        seed=seed,
+        props=_PROPS_MALHA_APP,
+    )
 
 
 def recortar_por_km_max(
@@ -152,7 +159,8 @@ def figura_superficies(
             pares.append(("13", "Cruz.: Caso 1 × Caso 3", p13, "#0c4a6e", "square-open"))
         if mostrar.get("c2", True) and mostrar.get("c3", True):
             p23 = pontos_intersecao_par_superficies(X, Y, Z2, Z3)
-            pares.append(("23", "Cruz.: Caso 2 × Caso 3", p23, "#831843", "triangle-up-open"))
+            # Scatter3d só aceita: circle, circle-open, cross, diamond, diamond-open, square, square-open, x
+            pares.append(("23", "Cruz.: Caso 2 × Caso 3", p23, "#831843", "cross"))
 
         km_ref = float(km_teto_cal) if km_teto_cal > 0 else float(np.nanmax(Y)) if Y.size else 1.0
 

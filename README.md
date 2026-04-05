@@ -6,7 +6,7 @@ Estudo em Python para **comparar o custo acumulado de energia** (gasolina e bate
 
 ## Objetivo
 
-Quantificar e visualizar **quanto se gasta em R$** para percorrer 500.000 km com viagens de **20 km**, quando a fração de quilometragem em **cidade** varia de **1% a 100%** (passo de 1 ponto percentual), contrastando:
+Quantificar e visualizar **quanto se gasta em R$** para percorrer 500.000 km com viagens de **25 km**, quando a fração de quilometragem em **cidade** varia de **1% a 100%** (passo de 1 ponto percentual), contrastando:
 
 1. um **baseline** de consumo cíclico fixo;
 2. um **comportamento estocástico** (prioridade elétrica com esquecimento e regras de abastecimento);
@@ -19,9 +19,9 @@ Quantificar e visualizar **quanto se gasta em R$** para percorrer 500.000 km com
 | Parâmetro | Valor |
 |-----------|--------|
 | Vida útil | 500.000 km |
-| Comprimento médio de viagem | 20 km (25.000 viagens no total) |
+| Comprimento médio de viagem | 25 km (20.000 viagens no total) |
 | Eixo de análise | Proporção de km em **cidade** *p* (1% a 100%); estrada = 1 − *p* |
-| Autonomia (capacidade) | Gasolina: **800 km**; elétrico: **200 km** (modelados em segmentos de 20 km) |
+| Autonomia máxima (Caso 2, tanque/bateria cheios) | Gasolina: **750 km** (estrada) / **600 km** (cidade); elétrico: **150 km** (estrada) / **250 km** (cidade). O consumo por viagem de 25 km usa a autonomia do tipo de via daquela viagem. |
 
 ### Rendimento energético (km por R$)
 
@@ -49,12 +49,12 @@ O custo total em 500.000 km é **500 × (custo de um ciclo de 1.000 km)**. Varia
 
 ### Caso 2 — Prioridade elétrica com comportamento probabilístico
 
-Simulação **Monte Carlo vetorizada** (`numpy`): muitas trajetórias em paralelo, um passo por viagem de 20 km.
+Simulação **Monte Carlo vetorizada** (`numpy`): muitas trajetórias em paralelo, um passo por viagem de 25 km.
 
 - Prioriza elétrico enquanto houver autonomia e o estado lógico indicar modo “elétrico”.
-- Com **1 segmento elétrico restante** (20 km na bateria): **95%** lembra de recarregar (autonomia elétrica restaurada; custo só dos km rodados); **5%** esquece e a viagem tende a sair na **gasolina** (se houver combustível / regras de tanque vazio).
-- Em viagem na **gasolina**: após consumir o segmento, **5%** lembra de recarregar a bateria e volta ao modo elétrico.
-- **Tanque vazio**: **95%** enche o tanque (restaura segmentos de gasolina); **5%** “esquece” — se ainda houver bateria, pode usar elétrico nessa viagem; caso contrário, abastece de forma obrigatória.
+- Com **energia elétrica restante equivalente a uma viagem de 25 km** (fração de bateria baixa): **95%** lembra de recarregar (autonomia elétrica restaurada; custo só dos km rodados); **5%** esquece e a viagem tende a sair na **gasolina** (se houver combustível / regras de tanque vazio).
+- Em viagem na **gasolina**: após percorrer os 25 km, **5%** lembra de recarregar a bateria e volta ao modo elétrico.
+- **Tanque vazio**: **95%** enche o tanque (restaura autonomia de gasolina); **5%** “esquece” — se ainda houver bateria, pode usar elétrico nessa viagem; caso contrário, abastece de forma obrigatória.
 
 Para cada trajetória, o código acumula dois totais hipotéticos por viagem:
 
