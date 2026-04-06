@@ -28,6 +28,63 @@ _PROPS_MALHA_APP = np.round(np.arange(0.05, 1.01, 0.05), 2)
 _COR_EIXO_TITULO = "#0f172a"  # slate-900
 _COR_EIXO_TICK = "#1e293b"  # slate-800
 
+# Posições de texto alternadas para reduzir sobreposição nos cruzamentos 3D
+_TEXTPOS_CRUZAMENTO = [
+    "top center",
+    "top left",
+    "top right",
+    "bottom center",
+    "bottom left",
+    "bottom right",
+    "middle left",
+    "middle right",
+]
+
+# Rotulos da sidebar -> chaves internas dos tres casos
+_ROTULOS_PLANOS: dict[str, str] = {
+    "Caso 1 — Baseline": "c1",
+    "Caso 2 — Comportamental (MC)": "c2",
+    "Caso 3 — Inteligente": "c3",
+}
+
+# Presets de câmera (scene.camera): chave exibida na UI
+_CAMERA_PRESETS: dict[str, dict] = {
+    "Isométrica": {"eye": {"x": 1.55, "y": -1.45, "z": 0.85}},
+    "Cidade × km (vista de cima)": {"eye": {"x": 0, "y": 0, "z": 2.75}, "up": {"x": 0, "y": 1, "z": 0}},
+    "Cidade × custo (vista lateral)": {
+        "eye": {"x": 0, "y": -2.75, "z": 0.4},
+        "up": {"x": 0, "y": 0, "z": 1},
+    },
+    "Km × custo (vista lateral)": {
+        "eye": {"x": 2.75, "y": 0, "z": 0.4},
+        "up": {"x": 0, "y": 0, "z": 1},
+    },
+    "Enfatizar custo (Z)": {"eye": {"x": 0.35, "y": -0.35, "z": 1.85}},
+}
+
+
+def _estilo_espacamento_rotulos(chave: str) -> tuple[int, float, int]:
+    """(textfont_size, marker_size, marker_linewidth)."""
+    if chave == "Compacto":
+        return 8, 5.5, 1
+    if chave == "Amplo":
+        return 12, 11.0, 2
+    return 10, 8.0, 2  # Normal
+
+
+def _botoes_camera_plotly() -> list[dict]:
+    """Botões relayout para o menu de vista no próprio gráfico."""
+    out: list[dict] = []
+    for label, cam in _CAMERA_PRESETS.items():
+        out.append(
+            dict(
+                label=label,
+                method="relayout",
+                args=[{"scene.camera": cam}],
+            )
+        )
+    return out
+
 st.set_page_config(
     page_title="Híbrido — custo 3D",
     layout="wide",
@@ -117,8 +174,16 @@ def figura_superficies(
     km_teto_cal: float,
     mostrar_cruzamentos: bool = True,
     rotulos_data_picker: bool = True,
+    cruzamentos: dict[str, bool] | None = None,
+    espacamento_rotulos: str = "Normal",
+    vista_camera: str = "Isométrica",
 ) -> go.Figure:
     fig = go.Figure()
+
+    fs_txt, fz_mrk, lw_mrk = _estilo_espacamento_rotulos(espacamento_rotulos)
+
+    if cruzamentos is None:
+        cruzamentos = {"pair_12": True, "pair_13": True, "pair_23": True, "triple": True}
 
     specs: list[tuple[str, np.ndarray, str, str]] = [
         ("c1", Z1, "Caso 1 — Ciclo fixo (baseline)", "#2ecc71"),
@@ -126,44 +191,61 @@ def figura_superficies(
         ("c3", Z3, "Caso 3 — Chaveamento inteligente", "#3498db"),
     ]
 
+    primeiro_plano = True
     for key, Z, nome, cor in specs:
         if not mostrar.get(key, True):
             continue
-        fig.add_trace(
-            go.Surface(
-                x=X,
-                y=Y,
-                z=Z,
-                name=nome,
-                opacity=0.52,
-                colorscale=[[0.0, cor], [1.0, cor]],
-                surfacecolor=Z,
-                showscale=False,
-                lighting=dict(ambient=0.65, diffuse=0.85, specular=0.25),
-                hovertemplate=(
+        trace_kw: dict = dict(
+            x=X,
+            y=Y,
+            z=Z,
+            name=nome,
+            opacity=0.52,
+            colorscale=[[0.0, cor], [1.0, cor]],
+            surfacecolor=Z,
+            showscale=False,
+            lighting=dict(ambient=0.65, diffuse=0.85, specular=0.25),
+            legendgroup="planos",
+            hovertemplate=(
                     "<b>%{fullData.name}</b><br>"
                     "Cidade: %{x:.1f} %<br>"
                     "Km acumulado: %{y:,.0f}<br>"
                     "Custo: %{z:,.0f} R$<extra></extra>"
                 ),
-            )
         )
+        if primeiro_plano:
+            trace_kw["legendgrouptitle_text"] = "Superfícies"
+            primeiro_plano = False
+        fig.add_trace(go.Surface(**trace_kw))
 
     if mostrar_cruzamentos:
         pares: list[tuple[str, str, np.ndarray, str, str]] = []
-        if mostrar.get("c1", True) and mostrar.get("c2", True):
+        if (
+            mostrar.get("c1", True)
+            and mostrar.get("c2", True)
+            and cruzamentos.get("pair_12", True)
+        ):
             p12 = pontos_intersecao_par_superficies(X, Y, Z1, Z2)
             pares.append(("12", "Cruz.: Caso 1 × Caso 2", p12, "#14532d", "diamond-open"))
-        if mostrar.get("c1", True) and mostrar.get("c3", True):
+        if (
+            mostrar.get("c1", True)
+            and mostrar.get("c3", True)
+            and cruzamentos.get("pair_13", True)
+        ):
             p13 = pontos_intersecao_par_superficies(X, Y, Z1, Z3)
             pares.append(("13", "Cruz.: Caso 1 × Caso 3", p13, "#0c4a6e", "square-open"))
-        if mostrar.get("c2", True) and mostrar.get("c3", True):
+        if (
+            mostrar.get("c2", True)
+            and mostrar.get("c3", True)
+            and cruzamentos.get("pair_23", True)
+        ):
             p23 = pontos_intersecao_par_superficies(X, Y, Z2, Z3)
             # Scatter3d só aceita: circle, circle-open, cross, diamond, diamond-open, square, square-open, x
             pares.append(("23", "Cruz.: Caso 2 × Caso 3", p23, "#831843", "cross"))
 
         km_ref = float(km_teto_cal) if km_teto_cal > 0 else float(np.nanmax(Y)) if Y.size else 1.0
 
+        primeiro_cruz = True
         for _key, legenda, P, cor_marca, simbolo in pares:
             if P.size == 0:
                 continue
@@ -179,24 +261,38 @@ def figura_superficies(
                 )
                 for p in P
             ]
+            n_pts = len(P)
+            posicoes = [_TEXTPOS_CRUZAMENTO[i % len(_TEXTPOS_CRUZAMENTO)] for i in range(n_pts)]
             modo = "markers+text" if rotulos_data_picker else "markers"
-            fig.add_trace(
-                go.Scatter3d(
-                    x=P[:, 0],
-                    y=P[:, 1],
-                    z=P[:, 2],
-                    mode=modo,
-                    name=legenda,
-                    text=textos,
-                    textposition="top center",
-                    textfont=dict(size=9, color=_COR_EIXO_TITULO, family="Arial, sans-serif"),
-                    marker=dict(size=6, color=cor_marca, symbol=simbolo, line=dict(width=1, color=_COR_EIXO_TITULO)),
-                    hovertemplate="%{text}<extra></extra>",
-                    legendgroup="cruz",
-                )
+            sc_kw: dict = dict(
+                x=P[:, 0],
+                y=P[:, 1],
+                z=P[:, 2],
+                mode=modo,
+                name=legenda,
+                text=textos,
+                textposition=posicoes,
+                textfont=dict(size=fs_txt, color=_COR_EIXO_TITULO, family="Arial, sans-serif"),
+                marker=dict(
+                    size=fz_mrk,
+                    color=cor_marca,
+                    symbol=simbolo,
+                    line=dict(width=lw_mrk, color=_COR_EIXO_TITULO),
+                ),
+                hovertemplate="%{text}<extra></extra>",
+                legendgroup="cruz",
             )
+            if primeiro_cruz:
+                sc_kw["legendgrouptitle_text"] = "Cruzamentos"
+                primeiro_cruz = False
+            fig.add_trace(go.Scatter3d(**sc_kw))
 
-        if mostrar.get("c1") and mostrar.get("c2") and mostrar.get("c3"):
+        if (
+            mostrar.get("c1")
+            and mostrar.get("c2")
+            and mostrar.get("c3")
+            and cruzamentos.get("triple", True)
+        ):
             Pt = pontos_cruzamento_triplo(Z1, Z2, Z3, X, Y)
             if Pt.size > 0:
                 ttxt = [
@@ -212,21 +308,30 @@ def figura_superficies(
                     for p in Pt
                 ]
                 modo_t = "markers+text" if rotulos_data_picker else "markers"
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=Pt[:, 0],
-                        y=Pt[:, 1],
-                        z=Pt[:, 2],
-                        mode=modo_t,
-                        name="Cruz.: os 3 planos",
-                        text=ttxt,
-                        textposition="top center",
-                        textfont=dict(size=10, color="#422006", family="Arial, sans-serif"),
-                        marker=dict(size=9, color="#f59e0b", symbol="circle", line=dict(width=1, color="#78350f")),
-                        hovertemplate="%{text}<extra></extra>",
-                        legendgroup="cruz",
-                    )
+                pos_t = [_TEXTPOS_CRUZAMENTO[i % len(_TEXTPOS_CRUZAMENTO)] for i in range(len(Pt))]
+                fs_tri = min(fs_txt + 1, 14)
+                mk_tri = min(fz_mrk + 1.5, 14.0)
+                tri_kw: dict = dict(
+                    x=Pt[:, 0],
+                    y=Pt[:, 1],
+                    z=Pt[:, 2],
+                    mode=modo_t,
+                    name="Cruz.: os 3 planos",
+                    text=ttxt,
+                    textposition=pos_t,
+                    textfont=dict(size=fs_tri, color="#422006", family="Arial, sans-serif"),
+                    marker=dict(
+                        size=mk_tri,
+                        color="#f59e0b",
+                        symbol="circle",
+                        line=dict(width=lw_mrk, color="#78350f"),
+                    ),
+                    hovertemplate="%{text}<extra></extra>",
+                    legendgroup="cruz",
                 )
+                if primeiro_cruz:
+                    tri_kw["legendgrouptitle_text"] = "Cruzamentos"
+                fig.add_trace(go.Scatter3d(**tri_kw))
 
     _font_titulo_eixo = dict(color=_COR_EIXO_TITULO, size=13, family="Arial, sans-serif")
     _font_tick_eixo = dict(color=_COR_EIXO_TICK, size=11, family="Arial, sans-serif")
@@ -243,6 +348,13 @@ def figura_superficies(
             "tickcolor": _COR_EIXO_TICK,
         }
 
+    cam_inicial = dict(_CAMERA_PRESETS.get(vista_camera, next(iter(_CAMERA_PRESETS.values()))))
+    chaves_cam = list(_CAMERA_PRESETS.keys())
+    try:
+        idx_menu_cam = chaves_cam.index(vista_camera)
+    except ValueError:
+        idx_menu_cam = 0
+
     fig.update_layout(
         title=dict(
             text="Custo acumulado (R$) × proporção cidade × km percorridos",
@@ -251,23 +363,63 @@ def figura_superficies(
             font=dict(color=_COR_EIXO_TITULO, size=17, family="Arial, sans-serif"),
         ),
         height=altura_px,
-        margin=dict(l=0, r=0, t=56, b=0),
+        margin=dict(l=0, r=0, t=72, b=0),
+        uirevision="custo3d",
         scene=dict(
             xaxis=_eixo_3d("Proporção de uso na cidade (%)"),
             yaxis=_eixo_3d("Utilização acumulada (km)"),
             zaxis=_eixo_3d("Custo acumulado (R$)"),
             bgcolor="rgb(248,249,250)",
             aspectmode="cube",
-            camera=dict(eye=dict(x=1.55, y=-1.45, z=0.85)),
+            camera=cam_inicial,
         ),
         legend=dict(
             yanchor="top",
             y=0.99,
             xanchor="left",
             x=0.02,
-            bgcolor="rgba(255,255,255,0.75)",
+            bgcolor="rgba(255,255,255,0.88)",
+            bordercolor="rgba(15,23,42,0.12)",
+            borderwidth=1,
+            tracegroupgap=16,
             font=dict(color=_COR_EIXO_TICK, size=12, family="Arial, sans-serif"),
+            title=dict(
+                text="<b>Legenda</b> — clique para mostrar ou ocultar cada série",
+                font=dict(size=11, color=_COR_EIXO_TICK, family="Arial, sans-serif"),
+            ),
+            itemsizing="constant",
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
         ),
+        annotations=[
+            dict(
+                text="<b>Vista (eixos)</b>",
+                x=0.98,
+                y=1.028,
+                xref="paper",
+                yref="paper",
+                xanchor="right",
+                showarrow=False,
+                font=dict(size=12, color=_COR_EIXO_TITULO, family="Arial, sans-serif"),
+            )
+        ],
+        updatemenus=[
+            dict(
+                type="dropdown",
+                direction="down",
+                showactive=True,
+                active=idx_menu_cam,
+                x=0.99,
+                xanchor="right",
+                y=1.0,
+                yanchor="bottom",
+                bgcolor="rgba(255,255,255,0.95)",
+                bordercolor=_COR_EIXO_TICK,
+                borderwidth=1,
+                font=dict(family="Arial, sans-serif", color=_COR_EIXO_TITULO, size=11),
+                buttons=_botoes_camera_plotly(),
+            )
+        ],
     )
     return fig
 
@@ -275,8 +427,9 @@ def figura_superficies(
 def main() -> None:
     st.title("Custo de abastecimento — visualização 3D interativa")
     st.caption(
-        "Gire, dê zoom e arraste com o mouse. Use a barra de ferramentas do gráfico "
-        "para captura de tela e reset de câmera."
+        "Gire, dê zoom e arraste com o mouse. Use a **legenda** do gráfico para ligar ou desligar cada "
+        "superfície e cada cruzamento; no canto superior direito, o menu **Vista (eixos)** muda o ângulo "
+        "sem recalcular a malha. A barra de ferramentas do Plotly permite exportar imagem e resetar a câmera."
     )
 
     with st.sidebar:
@@ -333,31 +486,74 @@ def main() -> None:
         st.caption("A página usa layout **wide**; o gráfico expande à largura útil.")
 
         st.divider()
-        st.subheader("Camadas")
-        c1 = st.checkbox("Caso 1 — Baseline", value=True)
-        c2 = st.checkbox("Caso 2 — Comportamental (MC)", value=True)
-        c3 = st.checkbox("Caso 3 — Inteligente", value=True)
-
+        st.subheader("Legenda — planos (superfícies)")
+        planos_sel = st.multiselect(
+            "Quais superfícies exibir",
+            options=list(_ROTULOS_PLANOS.keys()),
+            default=list(_ROTULOS_PLANOS.keys()),
+            help="Define quais planos entram no 3D. Você também pode alternar pelos itens da legenda do gráfico.",
+        )
         st.divider()
-        st.subheader("Cruzamentos entre planos")
+        st.subheader("Legenda — cruzamentos")
         mostrar_cruz = st.checkbox(
             "Mostrar pontos onde as superfícies se cruzam",
             value=True,
-            help="Marca interseções aproximadas (malha) e entradas na legenda.",
+            help="Interseções aproximadas na malha; escolha abaixo quais pares exibir.",
         )
         rotulos_dp = st.checkbox(
-            "Rótulos com data do período (datepicker) em cada cruzamento",
+            "Rótulos com data do período em cada cruzamento",
             value=True,
             help="Cada ponto mostra data estimada (km alinhado ao intervalo de datas), % cidade, km e R$.",
+        )
+        espacamento = st.select_slider(
+            "Espaçamento dos rótulos nos cruzamentos",
+            options=["Compacto", "Normal", "Amplo"],
+            value="Normal",
+            help="Amplo: fonte e marcadores maiores; posições de texto alternadas para reduzir sobreposição.",
+        )
+
+        mostrar = {v: (k in planos_sel) for k, v in _ROTULOS_PLANOS.items()}
+        if not any(mostrar.values()):
+            st.warning("Selecione pelo menos um plano.")
+            mostrar = {v: True for v in _ROTULOS_PLANOS.values()}
+
+        disponiveis: list[tuple[str, str]] = []
+        if mostrar["c1"] and mostrar["c2"]:
+            disponiveis.append(("Caso 1 x Caso 2", "pair_12"))
+        if mostrar["c1"] and mostrar["c3"]:
+            disponiveis.append(("Caso 1 x Caso 3", "pair_13"))
+        if mostrar["c2"] and mostrar["c3"]:
+            disponiveis.append(("Caso 2 x Caso 3", "pair_23"))
+        if mostrar["c1"] and mostrar["c2"] and mostrar["c3"]:
+            disponiveis.append(("Tres planos ao mesmo tempo (triplo)", "triple"))
+
+        cruz_dict: dict[str, bool] | None = None
+        if mostrar_cruz and disponiveis:
+            labels_disp = [x[0] for x in disponiveis]
+            cruz_sel = st.multiselect(
+                "Quais cruzamentos exibir",
+                options=labels_disp,
+                default=labels_disp,
+                help="Reduza a poluição visual mostrando só os cruzamentos que interessam.",
+            )
+            cruz_dict = {k: False for k in ("pair_12", "pair_13", "pair_23", "triple")}
+            for lbl, key in disponiveis:
+                if lbl in cruz_sel:
+                    cruz_dict[key] = True
+        elif mostrar_cruz and not disponiveis:
+            st.caption("Ative pelo menos dois planos para haver cruzamentos.")
+
+        st.divider()
+        st.subheader("Vista entre eixos (câmera)")
+        vista_inicial = st.selectbox(
+            "Ângulo inicial do gráfico 3D",
+            options=list(_CAMERA_PRESETS.keys()),
+            index=0,
+            help="Define a vista ao recarregar a página. No gráfico, use o menu no canto superior direito para trocar sem recalcular.",
         )
 
     X, Y, Z1, Z2, Z3 = carregar_malha(n_simulacoes=n_sim, seed=seed)
     Xs, Ys, Z1s, Z2s, Z3s = recortar_por_km_max(X, Y, Z1, Z2, Z3, km_teto)
-
-    mostrar = {"c1": c1, "c2": c2, "c3": c3}
-    if not any(mostrar.values()):
-        st.warning("Marque pelo menos um caso na barra lateral.")
-        mostrar = {k: True for k in mostrar}
 
     fig = figura_superficies(
         Xs,
@@ -372,6 +568,9 @@ def main() -> None:
         km_teto_cal=km_teto,
         mostrar_cruzamentos=mostrar_cruz,
         rotulos_data_picker=rotulos_dp,
+        cruzamentos=cruz_dict,
+        espacamento_rotulos=espacamento,
+        vista_camera=vista_inicial,
     )
 
     config = {
